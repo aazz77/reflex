@@ -217,12 +217,18 @@ impl Dispatcher {
                         conn.target = Target::Domain(domain, port);
                     }
                     FakeIpLookup::Missing => {
-                        tracing::warn!(
+                        // 不再断连（旧行为对齐 sing-box，但对长连接应用是致命的：
+                        // 客户端按 TTL 攥着假 IP，重连全部被静默丢弃——Google Play
+                        // 下载卡死即此症状）。对齐 ant/spectre：当作普通 IP 继续
+                        // 路由（IP 规则 + final）；拨号失败会快速报错给客户端，
+                        // 促使它重新解析（wire TTL 已降为 1s，且映射不再被驱逐，
+                        // 该窗口仅存在于进程重启/API flush 之后，最多 1s 自愈）。
+                        tracing::debug!(
                             fakeip = %ip,
-                            "fakeip reverse lookup: missing record, dropping connection; \
-                             enable experimental.cache_file.store_fakeip to persist mappings"
+                            "fakeip reverse lookup: missing record, treating as normal IP \
+                             (ant/spectre semantics; enable experimental.cache_file.store_fakeip \
+                             to persist mappings across restarts)"
                         );
-                        continue;
                     }
                     FakeIpLookup::NotFakeIp => {}
                 }
@@ -498,12 +504,15 @@ impl Dispatcher {
                                 packet.target = Target::Domain(domain, port);
                             }
                             FakeIpLookup::Missing => {
-                                tracing::warn!(
+                                // 同 run_tcp：不断包，按普通 IP 继续路由
+                                // （ant/spectre 语义）。配合 1s wire TTL，
+                                // 客户端最多 1s 后重新解析即恢复。
+                                tracing::debug!(
                                     fakeip = %ip,
-                                    "fakeip reverse lookup (udp): missing record, dropping packet; \
-                                     enable experimental.cache_file.store_fakeip to persist mappings"
+                                    "fakeip reverse lookup (udp): missing record, treating as \
+                                     normal IP (ant/spectre semantics; enable \
+                                     experimental.cache_file.store_fakeip to persist mappings)"
                                 );
-                                continue;
                             }
                             FakeIpLookup::NotFakeIp => {}
                         }
