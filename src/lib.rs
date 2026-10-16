@@ -1,3 +1,5 @@
+#![allow(clippy::double_must_use)]
+
 pub mod app;
 pub mod clash_mode;
 pub mod config;
