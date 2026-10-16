@@ -385,18 +385,34 @@ impl FakeIpStore {
         }
         let (start, end) = self.inet4_net?;
         let current = inner.inet4_current?;
-        // 参照 sing-box：next == last（广播地址）或超出 range 时从 start+2 重绕，
-        // 跳过网络地址（start+1）以避免分配到可能被保留的地址。
-        let candidate = ipv4_next(current);
-        let next = if candidate >= end {
-            ipv4_next(ipv4_next(start))
-        } else {
-            candidate
-        };
-        inner.inet4_current = Some(next);
-        if let Some(old_domain) = inner.addr_to_domain.remove(&std::net::IpAddr::V4(next)) {
-            inner.domain_to_v4.remove(&old_domain);
+        // 参照 ant FakeIpPool::alloc4：游标前进 + 碰撞扫描找空位，**绝不驱逐
+        // 已有映射**。旧实现（对齐 sing-box）在游标环绕时直接抢占旧 IP 并驱逐
+        // 其域名映射，导致客户端仍持有的 fakeip 变成死映射（反查 miss）。
+        // ant/spectre 的语义是映射一旦分配即终身有效：客户端攥着假 IP 重连时
+        // 反查必然命中；池满时分配失败（回落空应答），而不是杀死一个仍在
+        // 使用中的映射。扫描通常第一步就命中空位（游标紧邻上次分配），
+        // 均摊 O(1)；仅在池将满时才线性扫描。
+        let span = u32::from(end).saturating_sub(u32::from(start)) + 1;
+        let mut n = u32::from(current);
+        let mut taken = None;
+        for _ in 0..span {
+            let candidate = n.wrapping_add(1);
+            // 越过 end（广播地址）或 u32 上溢时，从 start+2 重绕
+            // （跳过网络地址 start 与 gateway start+1，与 sing-box/ant 一致）。
+            let next = if candidate >= u32::from(end) || candidate < u32::from(start) {
+                u32::from(ipv4_next(ipv4_next(start)))
+            } else {
+                candidate
+            };
+            n = next;
+            let ip = Ipv4Addr::from(n);
+            if !inner.addr_to_domain.contains_key(&std::net::IpAddr::V4(ip)) {
+                taken = Some(ip);
+                break;
+            }
         }
+        let next = taken?;
+        inner.inet4_current = Some(next);
         inner
             .addr_to_domain
             .insert(std::net::IpAddr::V4(next), domain.to_string());
@@ -433,17 +449,27 @@ impl FakeIpStore {
         }
         let (start, end) = self.inet6_net?;
         let current = inner.inet6_current?;
-        // 参照 sing-box：start+2 重绕。
-        let candidate = ipv6_next(current);
-        let next = if candidate >= end {
-            ipv6_next(ipv6_next(start))
-        } else {
-            candidate
-        };
-        inner.inet6_current = Some(next);
-        if let Some(old_domain) = inner.addr_to_domain.remove(&std::net::IpAddr::V6(next)) {
-            inner.domain_to_v6.remove(&old_domain);
+        // 参照 ant FakeIpPool::alloc6：碰撞扫描找空位、**不驱逐**，
+        // 但 inet6 段可能极大（/126 起），扫描设上限 4096 次（与 ant 一致）。
+        let mut n = u128::from(current);
+        let mut taken = None;
+        for _ in 0..4096 {
+            let candidate = n.wrapping_add(1);
+            // 越过 end 或 u128 上溢时从 start+2 重绕（跳过网络地址与 gateway）。
+            let next = if candidate >= u128::from(end) || candidate < u128::from(start) {
+                u128::from(ipv6_next(ipv6_next(start)))
+            } else {
+                candidate
+            };
+            n = next;
+            let ip = Ipv6Addr::from(n);
+            if !inner.addr_to_domain.contains_key(&std::net::IpAddr::V6(ip)) {
+                taken = Some(ip);
+                break;
+            }
         }
+        let next = taken?;
+        inner.inet6_current = Some(next);
         inner
             .addr_to_domain
             .insert(std::net::IpAddr::V6(next), domain.to_string());
@@ -471,10 +497,18 @@ fn build_ip_response(query: &[u8], rtype: u16, rdata: &[u8]) -> Bytes {
     if query.len() < 12 {
         return make_noerror_empty(query);
     }
-    // 参照 sing-box constant.DefaultDNSTTL = 600。
-    // fakeip 应答幂等（同域名始终同 IP），600s TTL 可减少重复 DNS 查询，
-    // 同时 fakeip store 本身保证一致性，缓存不会造成地址错位。
-    const TTL: u32 = 600;
+    // 1s（对齐 ant/spectre；sing-box 为 600s）。
+    //
+    // 为什么不用 600s：fakeip 映射在极端情况下仍会丢失（进程重启且未开
+    // `experimental.cache_file.store_fakeip`、Clash API flush、range 变更）。
+    // 600s TTL 意味着客户端——尤其是自己缓存 DNS 的长连接应用
+    // （Cronet/Google Play）——会把假 IP 攥在手里 10 分钟，期间每次重连都
+    // 打到死映射上。旧 reflex 在反查 miss 时直接断连，表现为
+    // 「fakeip 模式下 Google Play 下载不了软件，realip 正常」。
+    // 1s TTL 让客户端在映射丢失后最多 1s 就重新解析；配合「分配不驱逐」
+    // （见 allocate_v4 / allocate_v6），正常使用中映射终身有效，短 TTL
+    // 只是多几次幂等查询，不影响一致性。
+    const TTL: u32 = 1;
 
     // 只复制 Question section（QDCOUNT=1），不复制 Additional section。
     // 旧实现 `extend_from_slice(&query[12..])` 会把客户端的 EDNS0 OPT 记录
@@ -959,48 +993,45 @@ mod tests {
         assert_eq!(ip, Ipv4Addr::new(198, 18, 0, 2));
     }
 
-    /// 验证 wrap-around 后持久化指针的正确恢复。
+    /// 验证持久化指针被无条件采纳（而非 max(重建值, 持久化值)）。
     ///
     /// **回归测试**：旧实现用 max(重建值, 持久化值) 采纳指针，破坏 wrap-around：
     ///   当指针 wrap 回 start+2 后，持久化值 = start+2（小），而重建值 = max(record)+1
     ///   （大，因为高位 record 仍在）。max 取重建值，忽略 wrap，重启后从高位继续分配。
     ///
-    /// 修复后对齐 sing-box：range 未变时无条件采用持久化指针。wrap 后持久化值 = start+2，
-    /// 重启后正确从 start+2 继续分配。
+    /// 修复后对齐 sing-box：range 未变时无条件采用持久化指针。
     ///
-    /// 测试用一个很小的 range（/30 = 4 个地址：.0 网络、.1 start+1、.2 start+2、.3 广播），
-    /// 分配 2 个域名触发 wrap-around，然后重启验证指针 = start+2。
+    /// 注：分配策略已改为「碰撞扫描、不驱逐」（对齐 ant/spectre），映射终身有效，
+    /// 不再有环绕抢占。这里直接向持久层写入一个「小指针」来模拟 wrap 后的状态，
+    /// 验证重启后从该指针继续碰撞扫描（.3/.4 被占 → 分到 .5）；
+    /// 若退化成 max() 旧逻辑，则会从 .6 开始分配。
     #[tokio::test]
     async fn fakeip_wrap_around_pointer_persistence() {
         use crate::experimental::cache_file::open_cache_file;
         use tempfile::NamedTempFile;
 
         let f = NamedTempFile::new().unwrap();
-        // /30 range: 198.51.100.0 - 198.51.100.3
-        // 可分配：.1（start+1, 初值）、.2（start+2, wrap 目标）
-        // .0 是网络地址，.3 是广播地址，均跳过
+        // /29 range: 198.51.100.0 - 198.51.100.7
+        // 可分配：.2 ~ .6（.0 网络地址、.1 gateway 初值、.7 广播地址，均跳过）
         let cfg = FakeIpConfig {
-            inet4_range: Some("198.51.100.0/30".into()),
+            inet4_range: Some("198.51.100.0/29".into()),
             inet6_range: None,
         };
 
-        // 第一次启动：分配 2 个域名
-        // 初始指针 = start+1 = .1
-        // 第 1 次分配：candidate = .2，未 >= end(.3)，next = .2，指针 → .2
-        // 第 2 次分配：candidate = .3，>= end(.3)，wrap → start+2 = .2，指针 → .2
-        //   （.2 被重用，覆盖 host0 的映射）
+        // 第一次启动：分配 3 个域名 → .2 / .3 / .4，指针 → .4
         let (cf1, rd1) = open_cache_file(f.path(), true, 7, false, 3600).unwrap();
         let store1 =
             FakeIpStore::new_with_cache(&cfg, Some(cf1.clone()), Some(rd1.clone())).unwrap();
-        let _ = store1
-            .reply(&make_fakeip_query("host0.example.com", 1))
-            .unwrap();
-        let _ = store1
-            .reply(&make_fakeip_query("host1.example.com", 1))
-            .unwrap();
+        for i in 0..3 {
+            let _ = store1
+                .reply(&make_fakeip_query(&format!("host{i}.example.com"), 1))
+                .unwrap();
+        }
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        // 持久化指针应为 .2（wrap 后的值）
+        // 模拟 wrap：把持久化指针改写为 .2（小于 max(record)+1 = .5）
+        cf1.store_fakeip_pointers(Some(Ipv4Addr::new(198, 51, 100, 2)), None);
+        tokio::time::sleep(Duration::from_millis(150)).await;
         let (pv4, _) = rd1.load_fakeip_pointers().unwrap();
         assert_eq!(pv4, Some(Ipv4Addr::new(198, 51, 100, 2)));
 
@@ -1009,21 +1040,22 @@ mod tests {
         drop(rd1);
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // 重启：持久化指针 = .2，应无条件采用（修复后），而非 max(重建值=.3, .2)=.3
+        // 重启：持久化指针 = .2，应无条件采用（修复后），而非 max(重建值=.5, .2)=.5
         let (cf2, rd2) = open_cache_file(f.path(), true, 7, false, 3600).unwrap();
         let store2 = FakeIpStore::new_with_cache(&cfg, Some(cf2), Some(rd2)).unwrap();
 
-        // 重启后下一次分配：candidate = ipv4_next(.2) = .3，>= end(.3)，wrap → start+2 = .2
-        // 所以新分配的 IP 应为 .2（wrap 后），而非 .3（广播地址，不应分配）
+        // 重启后下一次分配：从 .2 的下一地址 .3 开始碰撞扫描，
+        // .3/.4 已被 host1/host2 占用（映射从持久层恢复）→ 分配到 .5。
+        // max() 旧逻辑会从 .5 的下一地址 .6 开始 → 分配到 .6。
         let resp = store2
-            .reply(&make_fakeip_query("host2.example.com", 1))
+            .reply(&make_fakeip_query("host3.example.com", 1))
             .unwrap();
         let ip_bytes: [u8; 4] = resp[resp.len() - 4..].try_into().unwrap();
         let ip = Ipv4Addr::from(ip_bytes);
         assert_eq!(
             ip,
-            Ipv4Addr::new(198, 51, 100, 2),
-            "after wrap-around + restart, should allocate .2 (wrap target), not .3 (broadcast)"
+            Ipv4Addr::new(198, 51, 100, 5),
+            "persisted pointer (.2) must be adopted unconditionally: scan .3/.4 taken → .5"
         );
     }
 
