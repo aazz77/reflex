@@ -35,10 +35,14 @@ use wire::{
 
 // ── FakeIP 反向查找结果 ───────────────────────────────────────────────────────
 
-/// 参照 sing-box route.go routeConnection 的三路分支：
+/// 参照 sing-box route.go routeConnection 的三路分支（Missing 语义已对齐
+/// ant/spectre，见下）：
 /// - IP 不在任何 fakeip 段   → NotFakeIp（正常路由）
 /// - IP 在段内且有 store 记录 → Found(domain)（恢复域名后路由）
-/// - IP 在段内但 store 无记录 → Missing（应断连，建议开启 store_fakeip）
+/// - IP 在段内但 store 无记录 → Missing（**按普通 IP 继续路由，不断连**——
+///   对齐 ant/spectre。映射丢失只可能来自进程重启（未开 store_fakeip）、
+///   Clash API flush 或 range 变更；配合 1s wire TTL 与「分配不驱逐」语义，
+///   客户端最多 1s 后重新解析即自愈。建议开启 store_fakeip 消除重启窗口）
 #[derive(Debug)]
 pub enum FakeIpLookup {
     NotFakeIp,
@@ -379,10 +383,13 @@ impl DnsResolver {
     }
 
     /// 查询 FakeIP 地址是否落在已知的 FakeIP 段内，若是则反向查找对应的域名。
-    /// 参照 sing-box route.go routeConnection：
+    /// 参照 sing-box route.go routeConnection（Missing 语义已对齐 ant/spectre）：
     ///   - IP 不在任何 fakeip 段 → `FakeIpLookup::NotFakeIp`
     ///   - IP 在段内且有记录    → `FakeIpLookup::Found(domain)`
-    ///   - IP 在段内但无记录   → `FakeIpLookup::Missing`（应断连，建议开启 cache_file）
+    ///   - IP 在段内但无记录   → `FakeIpLookup::Missing`（按普通 IP 继续路由，
+    ///     不断连——旧实现的「断连」会杀死客户端仍持有的长连接，是
+    ///     fakeip 模式下 Google Play 下载失败的根因之一；详见
+    ///     `FakeIpLookup` 枚举文档）
     pub fn lookup_fakeip(&self, addr: std::net::IpAddr) -> FakeIpLookup {
         for upstream in self.upstreams.values() {
             if let upstream::UpstreamKind::FakeIp { store } = &upstream.kind {
