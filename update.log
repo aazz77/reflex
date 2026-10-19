@@ -1,7 +1,4 @@
-fakeip-play
-inbound
-del-dead-code
-fakeip
+reconsitution fakeip-playinbounddel-dead-codefakeip
 http-socks-server
 inbound-vmess
 inbound-tuic
