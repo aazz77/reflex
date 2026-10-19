@@ -1,0 +1,59 @@
+[package]
+name = "reflex-lib"
+description = "reflex 核心：app/router/provider + 客户端本地入站（socks/http/mixed/tproxy/redir/dns）"
+version.workspace = true
+edition.workspace = true
+
+[features]
+# 默认全量：发布产物与改造前功能保持一致。
+# 按需裁剪时可用 --no-default-features --features ssh,tailscale,wireguard 组合。
+# 代理协议实现已迁入 reflex-protocol，此处为透传 feature。
+default   = ["ssh", "tailscale", "wireguard"]
+# SSH 出站：russh 客户端 + ~/.ssh 解析 + TOTP 2FA
+ssh       = ["reflex-protocol/ssh"]
+# Tailscale 出站：userspace netstack 设备
+tailscale = ["reflex-protocol/tailscale"]
+# WireGuard 入站/出站：per-peer smoltcp userspace 栈
+wireguard = ["reflex-protocol/wireguard"]
+
+[dependencies]
+ahash               = "0.8"
+anyhow              = "1"
+base64              = "0.22"
+bytes               = "1"
+dashmap             = "5"
+flate2              = "1"
+futures-util        = "0.3"
+http                = "1"
+libc                = "0.2"
+lru                 = "0.12"
+memmap2             = "0.9"
+notify              = { version = "6", default-features = false, features = ["macos_kqueue"] }
+regex               = "1"
+reqwest             = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream", "http2"] }
+rustls              = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls-native-certs = { version = "0.8" }
+serde               = { version = "1", features = ["derive"] }
+serde_json          = "1"
+serde_yaml          = "0.9"
+socket2             = { version = "0.5", features = ["all"] }
+tokio               = { version = "1", features = ["full"] }
+tokio-rustls        = { version = "0.26" }
+tracing             = "0.1"
+ureq                = "2"
+portable-atomic     = { version = "1", features = ["fallback"] }
+
+reflex-common   = { path = "../reflex-common" }
+reflex-config   = { path = "../reflex-config" }
+reflex-dns      = { path = "../reflex-dns" }
+reflex-netstack = { path = "../reflex-netstack" }
+# default-features = false：ssh/tailscale/wireguard 由上方 feature 透传开启，
+# 保证 --no-default-features 时能真正裁掉这些协议及其可选依赖。
+reflex-protocol = { path = "../reflex-protocol", default-features = false }
+reflex-ruleset  = { path = "../reflex-ruleset" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+]}

@@ -1,0 +1,49 @@
+[package]
+name = "reflex-bin"
+description = "reflex 可执行文件入口与 CLI（config 转换 / ruleset 编译 / 运行内核）"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "reflex"
+path = "src/main.rs"
+
+[features]
+default = ["jemalloc"]
+# jemalloc 仅在非 Windows 平台生效；Windows 端 tikv-jemallocator 不可用，
+# 该 feature 在 Windows 下自动启用 mimalloc（见下方 target-specific 依赖与 main.rs）。
+jemalloc = ["dep:tikv-jemallocator", "dep:mimalloc"]
+# Windows 专项构建入口：win.yml 用 --no-default-features --features mimalloc
+mimalloc = ["dep:mimalloc"]
+
+# jemalloc 只在非 Windows 平台构建（Windows 端不可用/不需要）
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+tikv-jemallocator = { version = "0.6", optional = true }
+
+[dependencies]
+anyhow      = "1"
+fst         = "0.4"
+libc        = "0.2"
+rustls      = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+serde_json  = "1"
+serde_yaml  = "0.9"
+tokio       = { version = "1", features = ["full"] }
+tracing     = "0.1"
+
+reflex-common   = { path = "../reflex-common" }
+reflex-config   = { path = "../reflex-config" }
+reflex-dns      = { path = "../reflex-dns" }
+reflex-lib      = { path = "../reflex-lib" }
+reflex-netstack = { path = "../reflex-netstack" }
+reflex-protocol = { path = "../reflex-protocol" }
+reflex-ruleset  = { path = "../reflex-ruleset" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Windows 端分配器改用 mimalloc（由 jemalloc feature 自动启用，保持默认 feature 集不变）
+mimalloc = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tempfile = "=3.13.0"
+
+[build-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

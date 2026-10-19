@@ -1,0 +1,25 @@
+[workspace]
+members = [
+    "reflex-common",
+    "reflex-config",
+    "reflex-ruleset",
+    "reflex-protocol",
+    "reflex-dns",
+    "reflex-netstack",
+    "reflex-lib",
+    "reflex-bin",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.4"
+edition = "2021"
+
+# 与原单 crate 版本保持一致：发布产物剥离符号、fat LTO、单编译单元、
+# panic=abort。profile 上移到 workspace 根，对所有成员生效。
+[profile.release]
+strip         = "symbols"  # 剥离调试符号表，不影响运行
+debug         = false      # 不内嵌调试信息
+lto           = true       # fat LTO：完整跨 crate 内联分析，比 "thin" 多榨 3-8% 吞吐
+codegen-units = 1          # 单编译单元，允许更完整的内联分析
+panic         = "abort"    # panic 直接退出，去掉 unwind 运行时；proxy 场景无影响

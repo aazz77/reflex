@@ -1,0 +1,31 @@
+[package]
+name = "reflex-dns"
+description = "reflex DNS：解析器、上游（udp/tcp/dot/doh/doq/h3/fakeip/hosts/local）、缓存与 DNS 规则"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ahash              = "0.8"
+anyhow             = "1"
+bytes              = "1"
+futures-util       = "0.3"
+h2                 = "0.4"
+h3                 = { version = "0.0.8" }
+h3-quinn           = { version = "0.0.10" }
+http               = "1"
+lru                = "0.12"
+quinn              = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+redb               = "2"
+rustls             = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls-native-certs = { version = "0.8" }
+smallvec           = { version = "1", features = ["const_generics"] }
+tokio              = { version = "1", features = ["full"] }
+tokio-rustls       = { version = "0.26" }
+tracing            = "0.1"
+
+reflex-common  = { path = "../reflex-common" }
+reflex-config  = { path = "../reflex-config" }
+reflex-ruleset = { path = "../reflex-ruleset" }
+
+[dev-dependencies]
+tempfile = "=3.13.0"

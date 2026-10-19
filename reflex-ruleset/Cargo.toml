@@ -1,0 +1,19 @@
+[package]
+name = "reflex-ruleset"
+description = "reflex 规则集：AdGuard/文本/二进制 .rrs 规则集的编译、加载与匹配"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ahash         = "0.8"
+aho-corasick  = "1"
+fst           = "0.4"
+memmap2       = "0.9"
+regex         = "1"
+serde         = { version = "1", features = ["derive"] }
+serde_json    = "1"
+serde_yaml    = "0.9"
+thiserror     = "1"
+
+[dev-dependencies]
+tempfile      = "3"
